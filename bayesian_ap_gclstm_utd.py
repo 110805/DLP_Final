@@ -1,3 +1,4 @@
+
 import numpy as np
 import pickle
 import torch
@@ -24,7 +25,7 @@ learning_rate = 0.001
 momentum = 0.9
 decay_rate = 0.9
 decay_step = 100
-epochs = 1000
+epochs = 1500
 device = 'cuda:0'
 path = "UTD_AP/"
 
@@ -197,7 +198,7 @@ class GC_LSTM(nn.Module):
         self.datat_bn = nn.BatchNorm1d(input_feature * num_joint)
         self.gclayers = GCLayers(num_feature,self.num_graph)
         self.dropout = nn.Dropout(0.25)
-        # self.lstm = BayesianLSTM(self.output_feature*num_joint,hidden_size,prior_sigma_1=1,prior_pi=1,posterior_rho_init=-3.0)
+        #self.lstm = BayesianLSTM(self.output_feature*num_joint,hidden_size,prior_sigma_1=1,prior_pi=1,posterior_rho_init=-3.0)
         self.lstm = nn.LSTM(self.output_feature*num_joint,hidden_size)
         
         
@@ -300,7 +301,7 @@ for epoch in range(epochs):
             D_negative_loss = BCE_criterion(valid_output,valid_negative)
             
             D_kl_loss = discriminator.nn_kl_divergence() * kl_weight
-            #D_loss = (D_positive_loss + D_negative_loss) / M
+            
             D_loss = (D_positive_loss + D_negative_loss + D_kl_loss) / M
             
             D_loss.backward()
@@ -318,11 +319,10 @@ for epoch in range(epochs):
             valid_feature = net(valid_data,valid_f)
             valid_output = discriminator(valid_feature).squeeze()
             adversarial_loss = BCE_criterion(valid_output,valid_positive)
-        
+            
             G_kl_loss = net.nn_kl_divergence() * kl_weight
             C_kl_loss = classifier.nn_kl_divergence() * kl_weight
             
-            #G_loss = (class_loss + adversarial_loss + G_kl_loss) / M
             G_loss = (class_loss + adversarial_loss + G_kl_loss + C_kl_loss) / M
             G_loss.backward()
             G_LOSS += G_loss.item()
@@ -356,15 +356,3 @@ for epoch in range(epochs):
         if correct/len(test_dataset) > early_stop:
             torch.save(net,"Bayesian_GC_LSTM.pkl")
             break
-
-net.eval()
-M = 10
-net = torch.load("Bayesian_GC_LSTM.pkl").to(device)
-correct = 0
-for (data, label, num_frame) in test_loader:
-    data, label, num_frame = data.to(device), label.to(device), num_frame.to(device)
-    for _ in range(M):
-        output = net(data,num_frame)
-        _, pred = output.max(1)
-        correct += pred.eq(label).sum().item()
-print("test acc: {:5.2f}%".format((correct/M)/len(test_dataset)*100.))
