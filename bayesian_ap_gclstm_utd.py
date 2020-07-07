@@ -24,7 +24,7 @@ learning_rate = 0.001
 momentum = 0.9
 decay_rate = 0.9
 decay_step = 100
-epochs = 1500
+epochs = 1000
 device = 'cuda:0'
 path = "UTD_AP/"
 
@@ -216,22 +216,22 @@ class GC_LSTM(nn.Module):
         
         return self.dropout(output)
 
-# @variational_estimator
+@variational_estimator
 class Classifier(nn.Module):
     def __init__(self, hidden_size):
         super(Classifier, self).__init__()
-        self.fc = nn.Linear(hidden_size,27)
+        self.fc = BayesianLinear(hidden_size,27)
         self.act = nn.Softmax(dim=1)
 
     def forward(self, x):
         x = self.fc(x)
         return self.act(x)
     
-# @variational_estimator
+@variational_estimator
 class Discriminator(nn.Module):
     def __init__(self, hidden_size):
         super(Discriminator, self).__init__()
-        self.fc = nn.Linear(hidden_size,1)
+        self.fc = BayesianLinear(hidden_size,1)
         self.act = nn.Sigmoid()
         
     def forward(self, x):
@@ -299,9 +299,9 @@ for epoch in range(epochs):
             valid_output = discriminator(valid_feature).squeeze()
             D_negative_loss = BCE_criterion(valid_output,valid_negative)
             
-            #D_kl_loss = discriminator.nn_kl_divergence() * kl_weight
-            D_loss = (D_positive_loss + D_negative_loss) / M
-            #D_loss = (D_positive_loss + D_negative_loss + D_kl_loss) / M
+            D_kl_loss = discriminator.nn_kl_divergence() * kl_weight
+            #D_loss = (D_positive_loss + D_negative_loss) / M
+            D_loss = (D_positive_loss + D_negative_loss + D_kl_loss) / M
             
             D_loss.backward()
             D_LOSS += D_loss.item()
@@ -318,12 +318,12 @@ for epoch in range(epochs):
             valid_feature = net(valid_data,valid_f)
             valid_output = discriminator(valid_feature).squeeze()
             adversarial_loss = BCE_criterion(valid_output,valid_positive)
-            
+        
             G_kl_loss = net.nn_kl_divergence() * kl_weight
-            #C_kl_loss = classifier.nn_kl_divergence() * kl_weight
+            C_kl_loss = classifier.nn_kl_divergence() * kl_weight
             
-            G_loss = (class_loss + adversarial_loss + G_kl_loss) / M
-            #G_loss = (class_loss + adversarial_loss + G_kl_loss + C_kl_loss) / M
+            #G_loss = (class_loss + adversarial_loss + G_kl_loss) / M
+            G_loss = (class_loss + adversarial_loss + G_kl_loss + C_kl_loss) / M
             G_loss.backward()
             G_LOSS += G_loss.item()
             
@@ -359,7 +359,7 @@ for epoch in range(epochs):
 
 net.eval()
 M = 10
-net = torch.load("Bayesian_GC_LSTM_86.pkl").to(device)
+net = torch.load("Bayesian_GC_LSTM.pkl").to(device)
 correct = 0
 for (data, label, num_frame) in test_loader:
     data, label, num_frame = data.to(device), label.to(device), num_frame.to(device)
