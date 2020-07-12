@@ -1,4 +1,3 @@
-
 import numpy as np
 import pickle
 import torch
@@ -19,13 +18,13 @@ num_joint = 20
 max_frame = 125
 input_feature = 6
 num_feature = 16
-hidden_size = 256
+hidden_size = 128
 batch_size = 32
 learning_rate = 0.001
 momentum = 0.9
 decay_rate = 0.9
 decay_step = 100
-epochs = 1500
+epochs = 1000
 device = 'cuda:0'
 path = "UTD_AP/"
 
@@ -200,6 +199,10 @@ class GC_LSTM(nn.Module):
         self.dropout = nn.Dropout(0.25)
         #self.lstm = BayesianLSTM(self.output_feature*num_joint,hidden_size,prior_sigma_1=1,prior_pi=1,posterior_rho_init=-3.0)
         self.lstm = nn.LSTM(self.output_feature*num_joint,hidden_size)
+        self.classifier = nn.Linear(hidden_size, 27)
+        self.discriminator = nn.Linear(hidden_size, 1)
+        self.softmax = nn.Softmax(dim=1)
+        self.sigmoid = nn.Sigmoid()
         
         
     def forward(self, x, num_frame):
@@ -215,45 +218,18 @@ class GC_LSTM(nn.Module):
             else:
                 output = torch.cat((output,self.lstm(x[i,:num_frame[i]])[0][-1]))
         
-        return self.dropout(output)
-
-@variational_estimator
-class Classifier(nn.Module):
-    def __init__(self, hidden_size):
-        super(Classifier, self).__init__()
-        self.fc = BayesianLinear(hidden_size,27)
-        self.act = nn.Softmax(dim=1)
-
-    def forward(self, x):
-        x = self.fc(x)
-        return self.act(x)
-    
-@variational_estimator
-class Discriminator(nn.Module):
-    def __init__(self, hidden_size):
-        super(Discriminator, self).__init__()
-        self.fc = BayesianLinear(hidden_size,1)
-        self.act = nn.Sigmoid()
-        
-    def forward(self, x):
-        x = self.fc(x)
-        return self.act(x)
+        output = self.dropout(output)
+        out1 = self.classifier(output)
+        out2 = self.discriminator(output)
+        return self.softmax(out1), self.sigmoid(out2)
             
 net = GC_LSTM(num_feature,hidden_size)
 net = net.to(device)
-classifier = Classifier(hidden_size)
-classifier = classifier.to(device)
-discriminator = Discriminator(hidden_size)
-discriminator = discriminator.to(device)
 
 CE_criterion = nn.CrossEntropyLoss()
 BCE_criterion = nn.BCELoss()
 optimizer = torch.optim.Adam(net.parameters(),lr=learning_rate)
-optimizer_C = torch.optim.Adam(classifier.parameters(),lr=learning_rate)
-optimizer_D = torch.optim.Adam(discriminator.parameters(),lr=learning_rate)
 scheduler = torch.optim.lr_scheduler.StepLR(optimizer,step_size=decay_step,gamma=decay_rate)
-scheduler_C = torch.optim.lr_scheduler.StepLR(optimizer_C,step_size=decay_step,gamma=decay_rate)
-scheduler_D = torch.optim.lr_scheduler.StepLR(optimizer_D,step_size=decay_step,gamma=decay_rate)
 
 kl_weight = 1. / len(train_dataset)
 
@@ -265,8 +241,6 @@ training_Dloss = []
 training_Gloss = []
 start = time.time()
 net.train()
-classifier.train()
-discriminator.train()
 
 validloader_iter = iter(valid_loader)
 
@@ -290,67 +264,58 @@ for epoch in range(epochs):
         valid_negative = torch.zeros(valid_label.size()).to(device)
         
         # train discriminator
-        optimizer_D.zero_grad()
+        optimizer.zero_grad()
         for m in range(M):
-            feature = net(data,num_frame)
-            output = discriminator(feature).squeeze()
+            _, output = net(data,num_frame)
+            output = output.squeeze()
             D_positive_loss = BCE_criterion(output,positive)
             
-            valid_feature = net(valid_data,valid_f)
-            valid_output = discriminator(valid_feature).squeeze()
+            _, valid_output = net(valid_data,valid_f)
+            valid_output = valid_output.squeeze()
             D_negative_loss = BCE_criterion(valid_output,valid_negative)
             
-            D_kl_loss = discriminator.nn_kl_divergence() * kl_weight
-            
-            D_loss = (D_positive_loss + D_negative_loss + D_kl_loss) / M
+            D_loss = (D_positive_loss + D_negative_loss) / M
             
             D_loss.backward()
             D_LOSS += D_loss.item()
-        optimizer_D.step()
+        optimizer.step()
         
         # train GC-LSTM and Classifier
         optimizer.zero_grad()
-        optimizer_C.zero_grad()
         for m in range(M):
-            feature = net(data,num_frame)
-            output = classifier(feature)
+            output, _ = net(data,num_frame)
             class_loss = CE_criterion(output, label)
             
-            valid_feature = net(valid_data,valid_f)
-            valid_output = discriminator(valid_feature).squeeze()
+            _, valid_output = net(valid_data,valid_f)
+            valid_output = valid_output.squeeze()
             adversarial_loss = BCE_criterion(valid_output,valid_positive)
             
-            G_kl_loss = net.nn_kl_divergence() * kl_weight
-            C_kl_loss = classifier.nn_kl_divergence() * kl_weight
+            # G_kl_loss = net.nn_kl_divergence() * kl_weight
             
-            G_loss = (class_loss + adversarial_loss + G_kl_loss + C_kl_loss) / M
+            G_loss = (class_loss + adversarial_loss) / M
             G_loss.backward()
             G_LOSS += G_loss.item()
             
             _, pred = output.max(1)
             correct += pred.eq(label).sum().item()
         optimizer.step()
-        optimizer_C.step()
-    correct /= 10
-    training_Dloss.append(D_LOSS/len(train_dataset))
-    training_Gloss.append(G_LOSS/len(train_dataset))
+    
+    correct /= M
     print("D loss:{:6.4f}, G loss:{:6.4f}, training acc:{:6.2f}%, time:{:.2f}s"
-          .format(training_Dloss[-1],training_Gloss[-1],correct/len(train_dataset)*100.,time.time()-start))
+          .format(D_LOSS/len(train_dataset), G_LOSS/len(train_dataset), correct/len(train_dataset)*100.,time.time()-start))
 
     scheduler.step()
-    scheduler_C.step()
-    scheduler_D.step()
     if (epoch+1) % test_interval == 0:
         correct = 0
         with torch.no_grad():
             for (data, label, num_frame) in test_loader:
                 data, label, num_frame = data.to(device), label.to(device), num_frame.to(device)
                 for m in range(M):
-                    feature = net(data,num_frame)
-                    output = classifier(feature)
+                    output, _ = net(data,num_frame)
                     _, pred = output.max(1)
                     correct += pred.eq(label).sum().item()
-        correct /= 10
+
+        correct /= M
         print("test acc: {:5.2f}%, time:{:7.2f}s"
               .format(correct/len(test_dataset)*100.,time.time()-start))
         if correct/len(test_dataset) > early_stop:
